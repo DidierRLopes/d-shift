@@ -35,7 +35,7 @@ Both memory tools are hidden: they run without a card in the chat, and the syste
 
 ## Searching: search_memory
 
-`search_memory` runs `bash -c <command>` with the working directory set to the memory folder, a 20 second timeout, output capped at 30k characters, and `ANTHROPIC_API_KEY` removed from the environment.
+`search_memory` runs `bash -c <command>` with the working directory set to the memory folder, a 20 second timeout, output capped at 30k characters, and `OPENAI_API_KEY` removed from the environment.
 
 It only runs commands that pass `ShellPolicy.isReadOnlyWithinFolder`. Anything else is refused and the model gets an error, because there is no visible approval step to escalate to. A command passes when all of these hold:
 

@@ -7,7 +7,7 @@ Thanks for helping out. D-Shift is early, so issues describing real-world proble
 ```bash
 git clone https://github.com/Kylejeong2/d-shift.git
 cd d-shift
-cp .env.example .env    # add your ANTHROPIC_API_KEY
+cp .env.example .env    # add your OPENAI_API_KEY
 swift run
 ```
 

@@ -1,6 +1,6 @@
 import AppKit
 
-/// Claude Code-style commands typed into the chat input.
+/// Slash commands typed into the chat input.
 enum SlashCommand: String, CaseIterable, Identifiable {
     case auto
     case new

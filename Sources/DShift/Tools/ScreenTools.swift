@@ -13,6 +13,9 @@ struct ReadScreenTool: Tool {
     func requiresApproval(for input: JSON) -> Bool { false }
 
     func run(_ input: JSON) async throws -> ToolOutput {
+        guard AXIsProcessTrusted() else {
+            return ToolOutput(text: ScreenPermissions.guidance(for: "Accessibility"))
+        }
         guard let app = tracker.app else { return ToolOutput(text: "No app is in focus.") }
         let context = await Task.detached { AXSnapshot.capture(app: app) }.value
         return ToolOutput(text: "App: \(context.appName)\nWindow: \(context.windowTitle)\n\n\(context.tree)")
@@ -43,10 +46,7 @@ struct ScreenshotTool: Tool {
     func run(_ input: JSON) async throws -> ToolOutput {
         guard CGPreflightScreenCaptureAccess() else {
             CGRequestScreenCaptureAccess()
-            return ToolOutput(
-                text:
-                    "Screen Recording permission is not granted. Ask the user to enable it in System Settings > Privacy & Security > Screen Recording, then relaunch the sidebar."
-            )
+            return ToolOutput(text: ScreenPermissions.guidance(for: "Screen Recording"))
         }
 
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
@@ -69,7 +69,7 @@ struct ScreenshotTool: Tool {
             let display =
                 content.displays.first { $0.frame.contains(window?.frame.origin ?? .zero) } ?? content.displays.first
             guard let display else { return ToolOutput(text: "No display found.") }
-            // The sidebar shows up in user screenshots, but Claude's own screenshots leave it out.
+            // The sidebar shows up in user screenshots, but Assistant's own screenshots leave it out.
             let ownWindows = content.windows.filter { $0.owningApplication?.processID == getpid() }
             filter = SCContentFilter(display: display, excludingWindows: ownWindows)
             frame = display.frame

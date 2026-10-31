@@ -19,11 +19,12 @@ private struct EchoTool: Tool {
 struct ToolRegistryTests {
     let registry = ToolRegistry(tools: [EchoTool()])
 
-    @Test func definitionsExposeSchemaWithEagerStreaming() {
+    @Test func definitionsExposeOpenAIFunctions() {
         let definition = registry.definitions[0]
         #expect(definition["name"] as? String == "echo")
-        #expect(definition["eager_input_streaming"] as? Bool == true)
-        #expect(definition["input_schema"] != nil)
+        #expect(definition["type"] as? String == "function")
+        #expect(definition["strict"] as? Bool == false)
+        #expect((definition["parameters"] as? JSON)?["required"] as? [String] == ["text", "count"])
     }
 
     @Test func looksUpToolsByName() throws {

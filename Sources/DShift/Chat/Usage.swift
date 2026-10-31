@@ -1,62 +1,62 @@
 import Foundation
 
-/// Token counts reported by one Messages API response.
+/// Responses API input counts include cached reads and writes. Output includes reasoning tokens.
 struct TokenUsage {
     var input = 0
     var output = 0
     var cacheRead = 0
     var cacheWrite = 0
+    var longCacheWrite = 0
 
-    /// `message_start` and `message_delta` both carry usage; later values are cumulative, so they overwrite.
-    mutating func merge(_ fields: JSON) {
-        if let value = fields["input_tokens"] as? Int { input = value }
-        if let value = fields["output_tokens"] as? Int { output = value }
-        if let value = fields["cache_read_input_tokens"] as? Int { cacheRead = value }
-        if let value = fields["cache_creation_input_tokens"] as? Int { cacheWrite = value }
+    // GPT-6.1 Sol standard prices per million tokens. Requests over 272K input tokens use long-context rates.
+    var estimatedCost: Double {
+        let inputPrice = input > 272_000 ? 4.0 : 2.0
+        let outputPrice = input > 272_000 ? 15.0 : 10.0
+        let ordinary = max(0, input - cacheRead - cacheWrite)
+        let shortWrites = max(0, cacheWrite - longCacheWrite)
+        return
+            (Double(ordinary) * inputPrice + Double(cacheRead) * inputPrice * 0.05
+            + Double(shortWrites) * inputPrice * 1.25 + Double(longCacheWrite) * inputPrice * 2.5
+            + Double(output) * outputPrice) / 1_000_000
     }
+
+    var costSummary: String { "\(input) in / \(output) out, $\(String(format: "%.3f", estimatedCost))" }
 
     static func + (lhs: TokenUsage, rhs: TokenUsage) -> TokenUsage {
         TokenUsage(
-            input: lhs.input + rhs.input,
-            output: lhs.output + rhs.output,
-            cacheRead: lhs.cacheRead + rhs.cacheRead,
-            cacheWrite: lhs.cacheWrite + rhs.cacheWrite
+            input: lhs.input + rhs.input, output: lhs.output + rhs.output,
+            cacheRead: lhs.cacheRead + rhs.cacheRead, cacheWrite: lhs.cacheWrite + rhs.cacheWrite,
+            longCacheWrite: lhs.longCacheWrite + rhs.longCacheWrite
         )
     }
 }
 
-/// Per-chat usage: session totals plus how full the context window was on the latest request.
-struct ChatUsage {
-    static let contextWindow = 1_000_000
-    // Claude Opus 5.5 list prices in dollars per million tokens. Cache writes are the 5-minute TTL rate (1.25x input).
-    private static let inputPrice = 4.0
-    private static let outputPrice = 20.0
-    private static let cacheReadPrice = 0.20
-    private static let cacheWritePrice = 5.0
+extension TokenUsage {
+    init(_ fields: JSON) {
+        input = fields["input_tokens"] as? Int ?? 0
+        output = fields["output_tokens"] as? Int ?? 0
+        let details = fields["input_tokens_details"] as? JSON ?? [:]
+        cacheRead = details["cached_tokens"] as? Int ?? 0
+        cacheWrite = details["cache_write_tokens"] as? Int ?? 0
+        longCacheWrite = (details["cache_write_tokens_details"] as? JSON)?["ttl_12h_tokens"] as? Int ?? 0
+    }
+}
 
+/// Costs accumulate per request because long-context rates depend on each request's input size.
+struct ChatUsage {
+    static let contextWindow = OpenAIClient.contextWindow
     private(set) var totals = TokenUsage()
     private(set) var requests = 0
     private(set) var contextTokens = 0
+    private(set) var estimatedCost = 0.0
 
     mutating func record(_ usage: TokenUsage) {
         totals = totals + usage
         requests += 1
-        contextTokens = usage.input + usage.cacheRead + usage.cacheWrite + usage.output
+        contextTokens = usage.input + usage.output
+        estimatedCost += usage.estimatedCost
     }
 
-    var contextFraction: Double {
-        Double(contextTokens) / Double(Self.contextWindow)
-    }
-
-    var cacheHitRate: Double {
-        let prompt = totals.input + totals.cacheRead + totals.cacheWrite
-        return prompt == 0 ? 0 : Double(totals.cacheRead) / Double(prompt)
-    }
-
-    var estimatedCost: Double {
-        (Double(totals.input) * Self.inputPrice
-            + Double(totals.output) * Self.outputPrice
-            + Double(totals.cacheRead) * Self.cacheReadPrice
-            + Double(totals.cacheWrite) * Self.cacheWritePrice) / 1_000_000
-    }
+    var contextFraction: Double { Double(contextTokens) / Double(Self.contextWindow) }
+    var cacheHitRate: Double { totals.input == 0 ? 0 : Double(totals.cacheRead) / Double(totals.input) }
 }

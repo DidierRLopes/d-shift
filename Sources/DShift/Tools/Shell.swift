@@ -45,6 +45,7 @@ enum ShellRunner {
         process.currentDirectoryURL = directory
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment.removeValue(forKey: "OPENAI_API_KEY")
         environment.removeValue(forKey: "ANTHROPIC_API_KEY")
         process.environment = environment
 

@@ -89,6 +89,7 @@ enum CodexRunner {
         process.arguments = ["app-server"]
         process.currentDirectoryURL = workDir
         var environment = ProcessInfo.processInfo.environment
+        environment.removeValue(forKey: "OPENAI_API_KEY")
         environment.removeValue(forKey: "ANTHROPIC_API_KEY")
         process.environment = environment
         let stdin = Pipe()

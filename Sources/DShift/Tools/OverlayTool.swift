@@ -1,7 +1,7 @@
 import AppKit
 import WebKit
 
-/// Draws graphics straight onto the user's screen. Claude describes what to draw; GPT-6.1 Sol Ultrafast writes the
+/// Draws graphics straight onto the user's screen. The assistant describes what to draw; GPT-6.1 Sol writes the
 /// HTML from that description plus the live frame of every element in the focused window, and it renders as it streams.
 struct OverlayTool: Tool {
     private static let maxOutputTokens = 8000
@@ -86,23 +86,24 @@ struct OverlayTool: Tool {
         overlay.lastPrompt = prompt
         let drawing = await overlay.begin(on: screen, standalone: isStandalone)
         var html = ""
-        var tokens = (input: 0, output: 0)
+        var tokens = TokenUsage()
         var lastPreview = Date.distantPast
         do {
             for try await event in OpenAIClient.stream(
-                instructions: Self.instructions, input: prompt, jpeg: jpeg, effort: "low",
+                instructions: Self.instructions, input: [OpenAIClient.userMessage(prompt, jpeg: jpeg)], effort: "low",
                 maxOutputTokens: Self.maxOutputTokens
             ) {
                 switch event {
-                case .text(let delta):
+                case .text(_, let delta):
                     html += delta
                     // Re-rendering the whole fragment on every token would thrash WebKit; ~12 fps looks live.
                     if Date().timeIntervalSince(lastPreview) > 0.08 {
                         overlay.preview(html, drawing: drawing)
                         lastPreview = Date()
                     }
-                case .usage(let input, let output):
-                    tokens = (input, output)
+                case .completed(let response):
+                    tokens = response.usage
+                case .itemAdded, .itemDone: break
                 }
             }
         } catch {
@@ -113,7 +114,7 @@ struct OverlayTool: Tool {
 
         Log.info(
             "overlay",
-            "drew \(html.count) chars, \(OpenAIClient.costSummary(input: tokens.input, output: tokens.output))")
+            "drew \(html.count) chars, \(tokens.costSummary)")
         return ToolOutput(text: "Drawn on the user's screen. They can see it now; Esc clears it.")
     }
 

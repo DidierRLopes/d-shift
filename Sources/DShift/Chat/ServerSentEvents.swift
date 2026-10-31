@@ -1,26 +1,35 @@
 import Foundation
 
-/// The HTTP streaming loop shared by the Claude and OpenAI clients: POST, surface non-200 bodies as errors, and map
+/// The HTTP streaming loop: POST, surface non-200 bodies as errors, and map
 /// each SSE line to zero or more events.
 enum ServerSentEvents {
     static func stream<Event>(
         _ makeRequest: @escaping () throws -> URLRequest,
         httpError: @escaping (_ status: Int, _ body: String) -> Error,
-        parse: @escaping (String) throws -> [Event]
+        parse: @escaping (String) throws -> [Event],
+        isComplete: @escaping (Event) -> Bool,
+        session: URLSession = .shared
     ) -> AsyncThrowingStream<Event, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let (bytes, response) = try await URLSession.shared.bytes(for: makeRequest())
+                    let (bytes, response) = try await session.bytes(for: makeRequest())
                     if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                         var body = ""
                         for try await line in bytes.lines { body += line }
                         throw httpError(http.statusCode, body)
                     }
                     for try await line in bytes.lines {
-                        for event in try parse(line) { continuation.yield(event) }
+                        try Task.checkCancellation()
+                        for event in try parse(line) {
+                            continuation.yield(event)
+                            if isComplete(event) {
+                                continuation.finish()
+                                return
+                            }
+                        }
                     }
-                    continuation.finish()
+                    throw ToolError.failed("OpenAI stream ended before completion. Please try again.")
                 } catch {
                     continuation.finish(throwing: error)
                 }

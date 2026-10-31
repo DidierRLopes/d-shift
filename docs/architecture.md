@@ -8,7 +8,7 @@ D-Shift is a single SwiftPM executable built on AppKit with SwiftUI views inside
 |---|---|---|
 | App | `App/AppDelegate.swift`, `App/SidebarController.swift`, `App/DoubleShiftMonitor.swift`, `App/ResizeHandle.swift`, `App/Config.swift` | Lifecycle, menu bar item, the panel window, the double-Shift trigger, edge resizing, settings |
 | Context | `Context/AXSnapshot.swift`, `Context/AppTracker.swift` | Serializing the focused window's accessibility tree, following the frontmost app and window title live |
-| Chat | `Chat/ChatModel.swift`, `Chat/ChatStore.swift`, `Chat/ClaudeClient.swift`, `Chat/Transcript.swift`, `Chat/Usage.swift` | One agent loop per tab, tab management, the streaming HTTP client, transcript entries, token accounting |
+| Chat | `Chat/ChatModel.swift`, `Chat/ChatStore.swift`, `Chat/OpenAIClient.swift`, `Chat/Transcript.swift`, `Chat/Usage.swift` | One agent loop per tab, tab management, the streaming HTTP client, transcript entries, token accounting |
 | Tools | `Tools/*.swift` | The `Tool` protocol, registry and validation, built-in tools, the shell policy |
 | Memory | `Memory/Memory.swift` | Memory folder layout and seeding, the overview sent each turn, the JSONL chat log |
 | UI | `UI/ChatView.swift` | Tabs, app header, transcript, tool cards, usage bar, input |
@@ -38,15 +38,13 @@ It sets `AXManualAccessibility` on the app element first, because Chrome and Ele
 
 ## Agent loop
 
-Each tab owns a `ChatModel`, which keeps its API transcript as raw JSON content blocks.
+Each tab owns a `ChatModel` and a local history of Responses API items.
 
-1. **User turn:** `<screen>` (only if it changed since the last send), `<memory>` (me.md plus the file list), then the question.
-2. **Stream:** `ClaudeClient` turns SSE lines into `StreamEvent`s at content-block granularity. `AssistantMessage` accumulates blocks verbatim, including thinking blocks and their signatures, so they can be sent back unchanged as the API requires during tool use.
-3. **Tools:** on `stop_reason == "tool_use"`, each `tool_use` block is validated, checked against its per-question call limit, approved if needed, and run. Hidden tools (memory, `read_screen`) run without a transcript row. The results go back in a single user message. Images (screenshots) are sent as image blocks inside `tool_result`.
-4. The loop repeats on `tool_use` and `pause_turn`, up to 12 iterations. `refusal` and `max_tokens` end it with a note.
-5. **Failure or Stop:** the transcript rolls back to before the turn, so it never contains a `tool_use` without its result.
+The user message contains the active app/window name and a memory overview. Screen content is read only when a tool needs it. `OpenAIClient` streams text to the transcript and preserves completed response items, including encrypted reasoning and message phases, for follow-up requests. Requests use `store: false`; the client supplies the conversation history.
 
-Requests use `claude-opus-5-5` at `effort: low`, top-level prompt caching, and `fallbacks: "default"` (server-side refusal fallback).
+Function calls pass through the existing registry, validation, per-turn limits, and approval flow. Each result refers to its `call_id` and can include text and images. OpenAI hosts web search; its progress appears in the transcript and URL annotations become clickable citations. Graphics use the same client and key as chat. Model and request settings live in `Chat/OpenAIClient.swift`.
+
+Only a completed response can enter the tool loop. Failed or truncated streams roll back the current turn's API history. On cancellation, the question and visible partial answer survive as ordinary messages, with pending tool calls removed. This keeps later messages usable without retrying interrupted actions.
 
 ## Streaming smoothness
 
@@ -54,4 +52,4 @@ Requests use `claude-opus-5-5` at `effort: low`, top-level prompt caching, and `
 
 ## Usage accounting
 
-`message_start` and `message_delta` usage fields are merged per request. `ChatUsage` totals input, output, cache-read, and cache-write tokens per tab. It records the last request's total as context-window usage (out of 1M) and estimates cost at Opus 5.5 list prices.
+OpenAI input totals include cache reads and writes; those tokens must not be counted twice. `Chat/Usage.swift` owns token pricing and records cost per request so crossing a long-context threshold later does not reprice earlier requests. The sidebar's estimate covers chat tokens; it excludes hosted-tool fees and separate graphics requests.

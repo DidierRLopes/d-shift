@@ -1,12 +1,13 @@
 # D-Shift
 
-A screen-aware AI sidebar for macOS. Double-tap **Shift** anywhere, ask a question, and Claude answers using what's on your screen and a local memory of who you are.
+A screen-aware AI sidebar for macOS. Double-tap **Shift** anywhere, ask a question, and the assistant answers using what's on your screen and a local memory of who you are.
 
 - **Sees your screen without screenshots by default.** It reads the macOS accessibility tree of the window you're looking at, which is exact and cheap. Only when that isn't enough (images, charts, design apps) does the model take a screenshot, at most one per question.
 - **Remembers you, locally.** Memory is a plain folder of markdown files on your Mac. The model searches it with `grep`/`rg` and saves what it learns about you in the background, without cluttering the chat.
-- **Stays out of the way.** A translucent, non-activating panel that floats over every app and Space, never steals focus from the app you're asking about, and is hidden from screen recordings.
+- **Stays out of the way.** A translucent, non-activating panel that floats over every app and Space, without stealing focus from the app you're asking about.
 - **Acts in your apps, in the background (optional).** If you have Codex with Computer Use, D-Shift can hand it tasks like "reply to Sam in Messages". Codex operates the app in the background while you keep working, and you approve every task first.
 - **Multiple chats.** Tabs, each with its own conversation and model session, plus live token, context-window, cache, and cost stats per chat.
+- **Voice conversations, locally.** Speak questions through local Whisper transcription and hear replies from Qwen3-TTS while keeping the text on screen. See [local voice setup](docs/voice.md).
 
 > Status: early (v0.x). macOS only. Expect rough edges and breaking changes.
 
@@ -18,7 +19,7 @@ A screen-aware AI sidebar for macOS. Double-tap **Shift** anywhere, ask a questi
    xattr -dr com.apple.quarantine /Applications/D-Shift.app
    ```
 3. Grant **Accessibility** when asked (System Settings > Privacy & Security > Accessibility), then quit and reopen D-Shift from the menu bar icon.
-4. Double-tap **Shift**, paste your [Anthropic API key](https://console.anthropic.com/settings/keys), and click Save. The key is stored in your Keychain.
+4. Double-tap **Shift**, paste your [OpenAI API key](https://platform.openai.com/api-keys), and click Save. The key is stored in your Keychain.
 
 Requires macOS 14 (Sonoma) or later, on Apple silicon or Intel.
 
@@ -26,18 +27,18 @@ Requires macOS 14 (Sonoma) or later, on Apple silicon or Intel.
 
 ## Run from source
 
-Requires Swift 5.9+ (Xcode or the Command Line Tools: `xcode-select --install`) and an [Anthropic API key](https://console.anthropic.com).
+Requires Swift 5.9+ (Xcode or the Command Line Tools: `xcode-select --install`) and an [OpenAI API key](https://platform.openai.com).
 
 ```bash
 git clone https://github.com/Kylejeong2/d-shift.git
 cd d-shift
-cp .env.example .env        # then set ANTHROPIC_API_KEY
+cp .env.example .env        # then set OPENAI_API_KEY
 swift run
 ```
 
 On first launch macOS asks for **Accessibility** access. Grant it, then relaunch. A shift icon appears in the menu bar.
 
-Double-tap **Shift** to open or close the sidebar.
+Double-tap **Shift** to open the sidebar and start voice input. Double-tap again to send. Use **Esc** to cancel and close, or the menu bar icon to open the sidebar for typing. Voice input requires the bundled app and a [local speech service](docs/voice.md).
 
 ### Permissions
 
@@ -45,18 +46,22 @@ Double-tap **Shift** to open or close the sidebar.
 |---|---|---|
 | Accessibility | Detect double-Shift, read the focused window's accessibility tree, follow the active app | First launch |
 | Screen Recording | The `take_screenshot` tool | The first time the model takes a screenshot |
+| Microphone | Record a spoken question for local transcription | First voice input in the bundled app |
 
-The downloaded app asks for these as D-Shift. When you launch with `swift run`, macOS attributes them to your **terminal app** instead. Grant them to the terminal and relaunch.
+The bundled app asks for these as D-Shift. With `swift run`, Accessibility and Screen Recording are attributed to your **terminal app** instead. Microphone input requires the bundled app; see [local voice](docs/voice.md).
+
+Screen permissions belong to **D-Shift**, even when it is reading Chrome. If D-Shift is missing from an Accessibility or Screen Recording list, use **+** to add `/Applications/D-Shift.app`. After replacing an ad-hoc signed build, macOS may require removing and adding that entry again. The sidebar shows a settings link when access is missing.
 
 ## Using it
 
 | Action | How |
 |---|---|
-| Open / close | Double-tap Shift, or Esc to close |
+| Speak / send voice | Double-tap Shift, then double-tap again to send |
+| Open / close sidebar | Menu bar icon, or Esc to close |
 | New chat tab | Cmd+T or the + button |
 | Close chat tab | Cmd+W or the x on the tab. Closing the last tab hides the sidebar. |
 | Resize | Drag the left edge for width, the top or bottom edge for height, or a left corner for both. Size and vertical position are remembered. |
-| Send while Claude is replying | Return queues the message; it runs when the current reply finishes |
+| Send while the assistant is replying | Return queues the message; it runs when the current reply finishes |
 | Interrupt and send now | Cmd+Return, or the arrow on a queued message |
 | Text size | Cmd+= / Cmd+- to zoom, Cmd+0 to reset (remembered) |
 | Reset a chat | Type `/clear` |
@@ -73,7 +78,7 @@ The row above the input shows, for the current chat: how full the context window
    Accessibility tree of the focused window  +  me.md + memory file list
                         │
                         v
-          Claude (Messages API, streaming, tool use loop)
+          the assistant (Responses API, streaming, tool use loop)
                         │
           ┌─────────────┼────────────────┬───────────────┐
           v             v                v               v
@@ -84,7 +89,7 @@ The row above the input shows, for the current chat: how full the context window
 
 1. On send, D-Shift tells the model only which app and window you're looking at. When the question needs the screen, the model calls `read_screen`, which serializes the focused window's accessibility tree into compact indented text. Screenshots work the same way, on demand.
 2. Each request also carries `me.md` and the list of memory files, so the model knows what it can look up.
-3. Claude streams back text and tool calls. Tools run locally; results go back to Claude until it finishes. Screen refreshes and memory reads and writes run in the background without a card in the chat. Screenshots show as a card with a thumbnail.
+3. the assistant streams back text and tool calls. Tools run locally; results go back to the assistant until it finishes. Screen refreshes and memory reads and writes run in the background without a card in the chat. Screenshots show as a card with a thumbnail.
 4. Streaming text is revealed on a 60 fps clock that drains a fraction of the backlog each frame, so output is smooth rather than bursty.
 
 More detail in [docs/architecture.md](docs/architecture.md).
@@ -116,19 +121,19 @@ Settings are read from the environment first, then `./.env`, then `~/.config/dsh
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | none (required) | API key. The app asks for it on first use if it isn't set elsewhere. Change it from the menu bar icon > Change API Key. |
+| `OPENAI_API_KEY` | none (required) | API key. The app asks for it on first use if it isn't set elsewhere. Change it from the menu bar icon > Change OpenAI API Key. |
 | `DSHIFT_DATA_DIR` | `~/Library/Application Support/DShift` | Memory and chat history location |
 | `DSHIFT_CODEX_PATH` | auto-detected | Path to the `codex` CLI, for computer use ([docs/tools.md](docs/tools.md)) |
 
-Model settings live in `Sources/DShift/Chat/ClaudeClient.swift`: the model (`claude-opus-5-5`) and effort (`low`, for fast sidebar answers).
+Chat, drawings, and 3D models share one OpenAI key and the standard service tier. Model and request settings live in [`OpenAIClient.swift`](Sources/DShift/Chat/OpenAIClient.swift).
 
 ## Privacy
 
 - Memory and history stay on your Mac.
-- Screen context (the app and window name on every message, the accessibility snapshot when the model calls `read_screen`, and screenshots when it takes one) and the memory overview are sent to the Anthropic API with your questions. Don't use D-Shift on screens you aren't comfortable sending.
-- The sidebar excludes itself from screenshots and screen recordings.
+- Screen context (the app and window name on every message, the accessibility snapshot when the model calls `read_screen`, and screenshots when it takes one) and the memory overview are sent to the OpenAI API with your questions. Don't use D-Shift on screens you aren't comfortable sending.
+- The app's screenshot tool excludes the sidebar; ordinary screen recordings may include it.
 - Computer-use tasks are sent to Codex (OpenAI) along with whatever Codex sees in the apps it operates. Each task needs your approval.
-- Memory search strips `ANTHROPIC_API_KEY` from the environment of the commands it runs.
+- Memory search strips `OPENAI_API_KEY` from the environment of the commands it runs.
 - Because memory is saved automatically, text on your screen could in principle influence what gets saved (prompt injection). Writes are confined to markdown files in the memory folder; review it occasionally.
 
 ## Development
@@ -155,7 +160,7 @@ Project layout:
 ```
 Sources/DShift/
 ├── App/       app lifecycle, panel window, double-Shift monitor, resize, config
-├── Chat/      chat model and agent loop, tabs, Claude streaming client, usage
+├── Chat/      chat model and agent loop, tabs, the assistant streaming client, usage
 ├── Context/   accessibility snapshots, active-app tracking
 ├── Memory/    memory folder, chat history log
 ├── Tools/     tool protocol and registry, screen tools, memory tools, shell policy

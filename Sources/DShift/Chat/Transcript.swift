@@ -117,6 +117,13 @@ final class TextEntry: ObservableObject, Identifiable {
         stopTimer()
     }
 
+    func replace(with finalText: String) {
+        pending = ""
+        stopTimer()
+        isStreaming = false
+        text = finalText
+    }
+
     private func revealFrame() {
         guard !pending.isEmpty else { return stopTimer() }
         let step = max(1, pending.count / Self.framesToDrainBacklog)

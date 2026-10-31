@@ -18,6 +18,7 @@ struct SidebarView: View {
             TabStrip(store: store, onClose: onClose)
             if apiKeys.hasKey {
                 AppContextHeader(tracker: store.tracker)
+                ScreenAccessView()
                 Divider().opacity(0.25)
                 ChatView(model: store.selected)
                     .id(store.selectedID)
@@ -39,28 +40,34 @@ private struct APIKeySetupView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add your Anthropic API key")
+            Text("Add your OpenAI API key")
                 .scaledFont(15, weight: .semibold)
             Text(
-                "D-Shift sends your questions and screen context to Claude using your own key. The key is stored in your macOS Keychain."
+                "D-Shift sends your questions and screen context to OpenAI using your own key. The key is stored in your macOS Keychain."
             )
             .scaledFont(12)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-            SecureField("sk-ant-...", text: $key)
+            SecureField("sk-...", text: $key)
                 .textFieldStyle(.plain)
                 .scaledFont(13)
                 .padding(10)
                 .background(Theme.surfaceFill, in: Theme.surfaceShape)
                 .overlay(Theme.surfaceShape.strokeBorder(Theme.stroke))
                 .onSubmit(save)
+                // The chat's image-aware paste shortcut is absent during setup.
+                .background {
+                    ShortcutKey("v") {
+                        NSApp.sendAction(#selector(NSText.paste(_:)), to: nil, from: nil)
+                    }
+                }
             if saveFailed {
                 Text("Couldn't save the key to the Keychain. Try again.")
                     .scaledFont(11)
                     .foregroundStyle(.red)
             }
             HStack {
-                Link("Get a key", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
+                Link("Get a key", destination: URL(string: "https://platform.openai.com/api-keys")!)
                     .scaledFont(12)
                 Spacer()
                 Button("Save", action: save)
@@ -88,6 +95,7 @@ private struct ChatView: View {
                 QueueView(model: model)
             }
             UsageBar(usage: model.usage)
+            SpeechControls()
             InputBar(model: model)
         }
     }
@@ -228,7 +236,7 @@ private struct TranscriptView: View {
                         ForEach(TranscriptItem.group(model.entries)) { item in
                             Group {
                                 switch item {
-                                case .text(let text): TextRow(entry: text)
+                                case .text(let text): TextRow(entry: text, chatID: model.id)
                                 case .tools(let calls): ToolGroup(calls: calls)
                                 case .task(let call): TaskRow(entry: call)
                                 }
@@ -296,7 +304,7 @@ private struct UsageBar: View {
             .help(
                 "\(usage.contextTokens.formatted()) of \(ChatUsage.contextWindow.formatted()) tokens in the last request"
             )
-            Text("\(Self.compact(usage.totals.input + usage.totals.cacheRead + usage.totals.cacheWrite)) in")
+            Text("\(Self.compact(usage.totals.input)) in")
             Text("\(Self.compact(usage.totals.output)) out")
             if usage.requests > 0 {
                 Text("\(Self.percent(usage.cacheHitRate)) cached")
@@ -309,7 +317,7 @@ private struct UsageBar: View {
                 usage.estimatedCost,
                 format: .currency(code: "USD").precision(.fractionLength(usage.estimatedCost < 1 ? 3 : 2))
             )
-            .help("Estimated at Opus 5.5 list prices over \(usage.requests) requests")
+            .help("Estimated GPT-6.1 Sol token cost over \(usage.requests) requests; excludes web search and graphics")
         }
         .scaledFont(10)
         .monospacedDigit()
@@ -434,6 +442,7 @@ struct ShimmerText: View {
 
 private struct TextRow: View {
     @ObservedObject var entry: TextEntry
+    let chatID: UUID
 
     var body: some View {
         switch entry.role {
@@ -478,7 +487,7 @@ private struct TextRow: View {
                 .background(Theme.surfaceFill, in: Theme.surfaceShape)
                 .overlay(Theme.surfaceShape.strokeBorder(Theme.stroke))
                 if !entry.isStreaming, !entry.text.isEmpty, !entry.text.hasPrefix("_") {
-                    MessageActions(text: entry.text)
+                    MessageActions(text: entry.text, entryID: entry.id, chatID: chatID)
                         .transition(.opacity)
                 }
             }
@@ -549,6 +558,7 @@ private struct QueuedRow: View {
 
 private struct InputBar: View {
     @ObservedObject var model: ChatModel
+    @ObservedObject private var dictation = DictationController.shared
     @FocusState private var isFocused: Bool
 
     @State private var highlighted = 0
@@ -557,7 +567,7 @@ private struct InputBar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if !commandMatches.isEmpty {
+            if !dictation.isActive, !commandMatches.isEmpty {
                 CommandMenu(commands: commandMatches, highlighted: min(highlighted, commandMatches.count - 1)) {
                     command in
                     model.input = command.name
@@ -566,6 +576,7 @@ private struct InputBar: View {
                 .transition(.fadeUp)
             }
             VStack(alignment: .leading, spacing: 8) {
+                DictationControls()
                 if !model.attachments.isEmpty {
                     AttachmentThumbnails(attachments: model.attachments, size: 48, onRemove: model.removeAttachment)
                 }
@@ -620,14 +631,25 @@ private struct InputBar: View {
                 return .handled
             }
             .onSubmit(submit)
+            .disabled(dictation.isActive)
             // Backup for Cmd+Return in case the field consumes the key press first; a second call finds empty input.
-            ShortcutKey(.return, action: model.sendNow)
-            ShortcutKey("v", action: pasteImageOrText)
-            IconButton(systemName: "camera", help: "Appshot: attach the current window (Ctrl+Shift)") {
-                Task { await model.attachWindowScreenshot() }
+            if !dictation.isActive {
+                ShortcutKey(.return, action: model.sendNow)
+                ShortcutKey("v", action: pasteImageOrText)
+                IconButton(systemName: "camera", help: "Appshot: attach the current window (Ctrl+Shift)") {
+                    Task { await model.attachWindowScreenshot() }
+                }
+                IconButton(systemName: "photo", help: "Attach an image (or paste / drop one)", action: pickImages)
+                SendControls(model: model)
             }
-            IconButton(systemName: "photo", help: "Attach an image (or paste / drop one)", action: pickImages)
-            SendControls(model: model)
+            if dictation.phase == .idle || dictation.phase == .recording {
+                IconButton(
+                    systemName: dictation.phase == .recording ? "arrow.up.circle.fill" : "mic",
+                    help: dictation.phase == .recording ? "Send voice message (double-Shift)" : "Speak (double-Shift)",
+                    action: model.toggleDictation
+                )
+                .foregroundStyle(dictation.phase == .recording ? Color.orange : Color.secondary)
+            }
         }
     }
 
@@ -643,7 +665,7 @@ private struct InputBar: View {
         return .handled
     }
 
-    /// Return with the command menu open runs the highlighted command, like Claude Code.
+    /// Return with the command menu open runs the highlighted command, with the command palette.
     private func submit() {
         if let command = highlightedCommand, SlashCommand.exact(model.input) == nil {
             model.input = command.name
@@ -756,7 +778,7 @@ private struct CommandMenu: View {
     }
 }
 
-/// Claude Code-style mode line under the input.
+/// Mode line under the input.
 private struct AutoModeHint: View {
     @ObservedObject var model: ChatModel
 

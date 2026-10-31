@@ -236,11 +236,11 @@ final class Scratchpad: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           main { flex: 1; overflow-y: auto;
             -webkit-mask-image: linear-gradient(transparent, #000 12px, #000 calc(100% - 28px), transparent); }
           #pad { padding: 14px 16px 48px; user-select: text; }
-          #pad:empty::before { content: "Claude uses this to think out loud, draft, and sketch."; display: block;
+          #pad:empty::before { content: "Assistant uses this to think out loud, draft, and sketch."; display: block;
             margin-top: 56px; text-align: center; color: var(--faint); font-size: 13px; }
           .block { position: relative; padding: 8px 12px; margin: 0 -12px 6px; border-radius: 10px; transition: background .15s; }
           .block:hover { background: rgba(255,255,255,.035); }
-          .block.text.claude { box-shadow: inset 2px 0 0 rgba(255,159,10,.55); }
+          .block.text.assistant { box-shadow: inset 2px 0 0 rgba(255,159,10,.55); }
           .block.enter { animation: enter .25s ease-out; }
           .meta { position: absolute; top: 7px; right: 10px; font-size: 10.5px; color: var(--faint); opacity: 0;
             transition: opacity .15s; pointer-events: none; }
@@ -343,12 +343,12 @@ final class Scratchpad: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           const blocks = () => [...pad().children];
           const refreshTimes = () => {
             for (const block of blocks()) {
-              block.querySelector(".meta").textContent = `${block.dataset.author === "you" ? "You" : "Claude"} · ${ago(+block.dataset.time)}`;
+              block.querySelector(".meta").textContent = `${block.dataset.author === "you" ? "You" : "Assistant"} · ${ago(+block.dataset.time)}`;
             }
             const status = document.getElementById("status");
             status.classList.toggle("writing", writing > 0);
             const latest = Math.max(0, ...blocks().map(block => +block.dataset.time));
-            status.querySelector("span").textContent = writing > 0 ? "Claude is writing…" : latest ? `Updated ${ago(latest)}` : "Empty";
+            status.querySelector("span").textContent = writing > 0 ? "Assistant is writing…" : latest ? `Updated ${ago(latest)}` : "Empty";
           };
           setInterval(refreshTimes, 30000);
 
@@ -370,7 +370,7 @@ final class Scratchpad: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           };
 
           // Click a text block to edit its Markdown; click away to render it. Checkboxes toggle in place.
-          const addText = (source, author = "claude", time = Date.now()) => {
+          const addText = (source, author = "assistant", time = Date.now()) => {
             const block = makeBlock("text", author, time);
             block.source = source;
             const body = document.createElement("div");
@@ -411,7 +411,7 @@ final class Scratchpad: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
           };
 
           // Each drawing runs in its own sandboxed frame: scripts allowed, but no same-origin access and no network.
-          const addDrawing = ({ code, svg, height, caption }, author = "claude", time = Date.now()) => new Promise(resolve => {
+          const addDrawing = ({ code, svg, height, caption }, author = "assistant", time = Date.now()) => new Promise(resolve => {
             const block = makeBlock("drawing", author, time);
             block.dataset.drawing = JSON.stringify({ code, svg, height, caption });
             const frame = document.createElement("iframe");

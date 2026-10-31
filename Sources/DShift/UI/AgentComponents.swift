@@ -502,6 +502,9 @@ private struct StatusPill: View {
 /// The action row under a finished reply.
 struct MessageActions: View {
     let text: String
+    let entryID: UUID
+    let chatID: UUID
+    @ObservedObject private var speech = SpeechController.shared
     @State private var didCopy = false
 
     var body: some View {
@@ -516,6 +519,22 @@ struct MessageActions: View {
             .buttonStyle(HoverFillStyle())
             .foregroundStyle(didCopy ? Color.green : .secondary)
             .help("Copy")
+            Button {
+                if speech.entryID == entryID {
+                    speech.stop()
+                } else {
+                    speech.speak(text, entryID: entryID, chatID: chatID)
+                }
+            } label: {
+                Image(systemName: speech.entryID == entryID ? "stop.fill" : "speaker.wave.2")
+                    .scaledFont(11)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(HoverFillStyle())
+            .foregroundStyle(.secondary)
+            .help(speech.entryID == entryID ? "Stop speaking" : "Read aloud with local voice")
+            .accessibilityLabel(speech.entryID == entryID ? "Stop speaking" : "Read aloud")
         }
     }
 

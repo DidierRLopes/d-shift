@@ -66,10 +66,24 @@ enum ChatArchive {
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    static func apiMessages(for id: UUID) -> [JSON] {
-        let file = dir.appendingPathComponent(id.uuidString).appendingPathComponent("api.json")
+    static func apiMessages(for chat: SavedChat) -> [JSON] {
+        let file = dir.appendingPathComponent(chat.id.uuidString).appendingPathComponent("api.json")
         guard let data = try? Data(contentsOf: file) else { return [] }
-        return (try? JSONSerialization.jsonObject(with: data)) as? [JSON] ?? []
+        let messages = (try? JSONSerialization.jsonObject(with: data)) as? [JSON] ?? []
+        // Archives written with a different provider retain their visible conversation without replaying its wire format.
+        guard messages.allSatisfy({ $0["type"] != nil }) else {
+            return chat.entries.compactMap { entry in
+                guard entry.kind != .tool else { return nil }
+                if entry.kind == .assistant {
+                    return ["type": "message", "role": "assistant", "content": entry.text]
+                }
+                var content: [JSON] = [["type": "input_text", "text": entry.text]]
+                content += entry.attachmentIDs.compactMap { attachment($0, in: chat.id) }
+                    .map { OpenAIClient.image($0.jpeg) }
+                return ["type": "message", "role": "user", "content": content]
+            }
+        }
+        return messages
     }
 
     static func attachment(_ attachmentID: UUID, in chatID: UUID) -> Attachment? {

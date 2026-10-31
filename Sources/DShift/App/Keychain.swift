@@ -46,7 +46,7 @@ enum Keychain {
 @MainActor
 final class APIKeyStore: ObservableObject {
     static let shared = APIKeyStore()
-    private static let account = "ANTHROPIC_API_KEY"
+    private static let account = "OPENAI_API_KEY"
 
     @Published private(set) var hasKey = Config.value(account) != nil
 

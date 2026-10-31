@@ -15,7 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         sidebar = SidebarController()
-        shiftMonitor = DoubleShiftMonitor { [weak self] in self?.sidebar.toggle() }
+        shiftMonitor = DoubleShiftMonitor { [weak self] in self?.sidebar.voiceShortcut() }
         shiftMonitor.start()
         appshotMonitor = ModifierChordMonitor { [weak self] in
             Task { await self?.sidebar.appshot() }
@@ -52,6 +52,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Don't leave a Codex computer-use run behind when D-Shift quits mid-task.
     func applicationWillTerminate(_ notification: Notification) {
+        DictationController.shared.cancel()
+        SpeechController.shared.stop()
         CodexProcessTree.shutDownAll()
     }
 
@@ -59,13 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "shift", accessibilityDescription: "D-Shift")
         let menu = NSMenu()
-        menu.addItem(withTitle: "Toggle Sidebar (Shift Shift)", action: #selector(toggleSidebar), keyEquivalent: "")
+        menu.addItem(withTitle: "Toggle Sidebar", action: #selector(toggleSidebar), keyEquivalent: "")
             .target = self
         menu.addItem(withTitle: "Open Memory Folder", action: #selector(openMemory), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Open Feedback Folder", action: #selector(openFeedback), keyEquivalent: "").target =
             self
-        menu.addItem(withTitle: "Change API Key...", action: #selector(changeAPIKey), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Set OpenAI API Key...", action: #selector(setOpenAIKey), keyEquivalent: "").target =
+        menu.addItem(withTitle: "Change OpenAI API Key...", action: #selector(changeAPIKey), keyEquivalent: "").target =
             self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit D-Shift", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -77,28 +78,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openFeedback() { NSWorkspace.shared.open(Feedback.dir) }
 
     @objc private func changeAPIKey() {
+        DictationController.shared.cancel()
+        SpeechController.shared.stop()
         APIKeyStore.shared.reset()
         sidebar.reveal()
     }
 
-    /// Optional key for on-screen graphics. Saved to the keychain; an empty field removes it. New chat tabs pick it up.
-    @objc private func setOpenAIKey() {
-        let alert = NSAlert()
-        alert.messageText = "OpenAI API Key"
-        alert.informativeText =
-            "Used only for drawing on your screen (GPT-6.1 Sol Ultrafast). Open a new chat tab after saving. Leave empty to remove."
-        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let key = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if key.isEmpty {
-            Keychain.delete("OPENAI_API_KEY")
-        } else {
-            Keychain.save(key, for: "OPENAI_API_KEY")
-        }
-    }
 }

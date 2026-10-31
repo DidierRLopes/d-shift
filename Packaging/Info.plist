@@ -24,6 +24,8 @@
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>D-Shift records your question when you start voice input. Audio is transcribed by your local speech service.</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright (c) 2026 Kyle Jeong. MIT License.</string>
 </dict>

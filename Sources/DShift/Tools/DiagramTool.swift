@@ -1,7 +1,7 @@
 import AppKit
 import WebKit
 
-/// Renders a Mermaid diagram to an image shown in the chat. The image also goes back to Claude so it can check
+/// Renders a Mermaid diagram to an image shown in the chat. The image also goes back to Assistant so it can check
 /// the result and fix layout or syntax problems.
 struct DiagramTool: Tool {
     let name = "make_diagram"
@@ -87,7 +87,7 @@ final class DiagramRenderer: NSObject, WKNavigationDelegate {
         configuration.afterScreenUpdates = true
         configuration.snapshotWidth = NSNumber(value: Double(rect.width * 2))  // Retina-sharp
         let image = try await webView.takeSnapshot(configuration: configuration)
-        // JPEG because tool images are sent to Claude as image/jpeg. The diagram sits on an opaque dark card.
+        // JPEG because tool images are sent to Assistant as image/jpeg. The diagram sits on an opaque dark card.
         guard let tiff = image.tiffRepresentation,
             let jpeg = NSBitmapImageRep(data: tiff)?.representation(using: .jpeg, properties: [.compressionFactor: 0.9])
         else {

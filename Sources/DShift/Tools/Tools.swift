@@ -1,13 +1,13 @@
 import AppKit
 import ScreenCaptureKit
 
-/// What a tool hands back to Claude: text, plus an optional image sent as an image block.
+/// What a tool hands back to the assistant: text, plus an optional image sent as an image block.
 struct ToolOutput {
     var text: String
     var jpeg: Data? = nil
 }
 
-/// A client-side tool Claude can call. Return true from `requiresApproval` for any input that could change something.
+/// A client-side tool the assistant can call. Return true from `requiresApproval` for any input that could change something.
 @MainActor
 protocol Tool {
     var name: String { get }
@@ -73,8 +73,9 @@ struct ToolRegistry {
             [
                 "name": $0.name,
                 "description": $0.description,
-                "input_schema": $0.inputSchema,
-                "eager_input_streaming": true,
+                "type": "function",
+                "parameters": $0.inputSchema,
+                "strict": false,
             ]
         }
     }
@@ -84,7 +85,7 @@ struct ToolRegistry {
         return tool
     }
 
-    /// Eager input streaming skips server-side validation, so check required fields before running.
+    /// Optional arguments use non-strict schemas; validate required fields before executing model input.
     func validate(_ input: JSON, for tool: Tool) throws {
         let required = tool.inputSchema["required"] as? [String] ?? []
         let properties = tool.inputSchema["properties"] as? [String: JSON] ?? [:]

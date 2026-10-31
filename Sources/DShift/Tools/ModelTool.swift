@@ -1,7 +1,7 @@
 import AppKit
 import SceneKit
 
-/// Shows a 3D model floating on the user's screen. GPT-6.1 Sol Ultrafast streams the model as JSON lines, one part
+/// Shows a 3D model floating on the user's screen. GPT-6.1 Sol streams the model as JSON lines, one part
 /// per line, and each part is added to a native SceneKit view as it arrives, so the model assembles live. No
 /// generated code runs: the lines only describe shapes.
 struct ModelTool: Tool {
@@ -109,14 +109,14 @@ struct ModelTool: Tool {
         var concept = ""
         var parts = 0
         var lines: [String] = []
-        var tokens = (input: 0, output: 0)
+        var tokens = TokenUsage()
         var firstPart: TimeInterval?
 
         func timing(since start: Date) -> String {
             String(format: "first part after %.1fs, done after %.1fs", firstPart ?? 0, Date().timeIntervalSince(start))
         }
 
-        var costSummary: String { OpenAIClient.costSummary(input: tokens.input, output: tokens.output) }
+        var costSummary: String { tokens.costSummary }
     }
 
     /// Streams JSON Lines from Sol into `window`, adding each part the moment its line completes.
@@ -137,18 +137,20 @@ struct ModelTool: Tool {
             }
         }
         for try await event in OpenAIClient.stream(
-            instructions: instructions, input: input, jpeg: image, effort: effort, maxOutputTokens: maxOutputTokens
+            instructions: instructions, input: [OpenAIClient.userMessage(input, jpeg: image)],
+            effort: effort, maxOutputTokens: maxOutputTokens
         ) {
             try Task.checkCancellation()
             switch event {
-            case .text(let delta):
+            case .text(_, let delta):
                 pending += delta
                 while let newline = pending.firstIndex(of: "\n") {
                     handle(String(pending[..<newline]))
                     pending = String(pending[pending.index(after: newline)...])
                 }
-            case .usage(let input, let output):
-                build.tokens = (input, output)
+            case .completed(let response):
+                build.tokens = response.usage
+            case .itemAdded, .itemDone: break
             }
         }
         handle(pending)

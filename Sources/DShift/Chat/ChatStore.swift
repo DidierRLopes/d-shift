@@ -10,6 +10,13 @@ final class ChatStore: ObservableObject {
     @Published var isHistoryOpen = false
 
     private func wire(_ chat: ChatModel) {
+        let chatID = chat.id
+        chat.onReply = { [weak self] text, entryID in
+            guard self?.selectedID == chatID, SpeechController.shared.enabled,
+                !DictationController.shared.isActive
+            else { return }
+            SpeechController.shared.speak(text, entryID: entryID, chatID: chatID)
+        }
         chat.onStoreCommand = { [weak self] command in
             switch command {
             case .new: self?.newChat()
@@ -31,6 +38,8 @@ final class ChatStore: ObservableObject {
     }
 
     func newChat() {
+        DictationController.shared.cancel()
+        SpeechController.shared.stop()
         let chat = ChatModel(tracker: tracker)
         wire(chat)
         chats.append(chat)
@@ -39,6 +48,8 @@ final class ChatStore: ObservableObject {
 
     /// Reopens a saved chat in a tab, or switches to it if it's already open.
     func open(_ saved: SavedChat) {
+        DictationController.shared.cancel()
+        SpeechController.shared.stop()
         if chats.contains(where: { $0.id == saved.id }) { return select(saved.id) }
         let chat = ChatModel(tracker: tracker, restoring: saved)
         wire(chat)
@@ -53,6 +64,10 @@ final class ChatStore: ObservableObject {
     }
 
     func select(_ id: UUID) {
+        if selectedID != id {
+            DictationController.shared.cancel()
+            SpeechController.shared.stop()
+        }
         selectedID = id
         selected.focusRequest += 1
     }

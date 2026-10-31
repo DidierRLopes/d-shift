@@ -5,6 +5,11 @@ import SwiftUI
 final class SidebarPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 
+    override func orderOut(_ sender: Any?) {
+        DictationController.shared.cancel()
+        super.orderOut(sender)
+    }
+
     override func cancelOperation(_ sender: Any?) {
         orderOut(nil)
     }
@@ -113,6 +118,12 @@ final class SidebarController {
 
     func toggle() {
         panel.isVisible ? panel.orderOut(nil) : show()
+    }
+
+    func voiceShortcut() {
+        show()
+        guard APIKeyStore.shared.hasKey else { return }
+        store.selected.toggleDictation()
     }
 
     /// Ctrl+Shift: screenshot the focused window into the current chat, then bring the sidebar up.

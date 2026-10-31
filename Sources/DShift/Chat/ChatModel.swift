@@ -16,7 +16,7 @@ final class ChatModel: ObservableObject {
         The user can attach their own screenshots or images to a message; they arrive as images before the text. \
         Treat them as what the user wants you to look at.
 
-        Web: you can search the web (web_search) and read pages (web_fetch). Use them for anything current, \
+        Web: use web_search to search the web and open pages. Use them for anything current, \
         factual, or outside what's on screen, and cite the pages you used with their URLs. Don't search for things the \
         screen already answers.
 
@@ -70,6 +70,7 @@ final class ChatModel: ObservableObject {
     @Published var focusRequest = 0
     /// Commands that act on tabs rather than this chat (/new, /history) go to the store.
     var onStoreCommand: ((SlashCommand) -> Void)?
+    var onReply: ((_ text: String, _ entryID: UUID) -> Void)?
 
     let tracker: AppTracker
     let scroll = ScrollSignal()
@@ -89,20 +90,33 @@ final class ChatModel: ObservableObject {
         if let saved {
             title = saved.title
             entries = saved.entries.map { Self.transcriptEntry(from: $0, chat: saved.id) }
-            apiMessages = ChatArchive.apiMessages(for: saved.id)
+            apiMessages = ChatArchive.apiMessages(for: saved)
         }
         var available: [Tool] = [
             ReadScreenTool(tracker: tracker), ScreenshotTool(tracker: tracker), MemorySearchTool(), MemoryWriteTool(),
-            DiagramTool(), ScratchpadTool(),
+            DiagramTool(), ScratchpadTool(), OverlayTool(tracker: tracker), ModelTool(),
         ]
         if let codexPath = ComputerUseTool.locateCodex() {
             available.append(ComputerUseTool(codexPath: codexPath))
         }
-        if OpenAIClient.hasKey {
-            available.append(OverlayTool(tracker: tracker))
-            available.append(ModelTool())
-        }
         tools = ToolRegistry(tools: available)
+    }
+
+    func toggleDictation() {
+        let dictation = DictationController.shared
+        switch dictation.phase {
+        case .idle:
+            SpeechController.shared.stop()
+            dictation.start(chatID: id) { [weak self] text, shouldSend in
+                guard let self else { return }
+                input += input.isEmpty || input.last?.isWhitespace == true ? text : " " + text
+                if shouldSend { send() } else { focusRequest += 1 }
+            }
+        case .recording:
+            dictation.finish()
+        case .authorizing, .transcribing:
+            dictation.cancel()
+        }
     }
 
     /// Return: sends now when idle, otherwise queues behind the running turn.
@@ -171,6 +185,7 @@ final class ChatModel: ObservableObject {
     }
 
     private func takeInput() -> QueuedMessage? {
+        DictationController.shared.cancel(for: id)
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachments.isEmpty else { return nil }
         let message = QueuedMessage(text: text, attachments: attachments)
@@ -187,6 +202,8 @@ final class ChatModel: ObservableObject {
     }
 
     private func interrupt() {
+        DictationController.shared.cancel(for: id)
+        SpeechController.shared.stop(for: id)
         runTask?.cancel()
         for case .tool(let call) in entries where !call.isFinished {
             if call.status == .awaitingApproval { call.resolveApproval(false) }
@@ -197,6 +214,7 @@ final class ChatModel: ObservableObject {
     }
 
     private func start(_ message: QueuedMessage) {
+        SpeechController.shared.stop(for: id)
         let question = message.text.isEmpty ? "What do you make of this screenshot?" : message.text
         if entries.isEmpty { title = String(question.prefix(28)) }
         entries.append(.text(TextEntry(role: .user, text: message.text, attachments: message.attachments)))
@@ -233,50 +251,48 @@ final class ChatModel: ObservableObject {
         let firstReplyIndex = entries.count
         let content = userContent(for: question)
         let imageBlocks: [JSON] = attachments.flatMap { attachment -> [JSON] in
-            let image: JSON = [
-                "type": "image",
-                "source": [
-                    "type": "base64", "media_type": "image/jpeg", "data": attachment.jpeg.base64EncodedString(),
-                ],
-            ]
+            let image = OpenAIClient.image(attachment.jpeg)
             guard let source = attachment.source else { return [image] }
             let label =
                 source.windowTitle.isEmpty ? source.appName : "\(source.appName), window \"\(source.windowTitle)\""
-            return [["type": "text", "text": "Appshot of \(label):"], image]
+            return [["type": "input_text", "text": "Appshot of \(label):"], image]
         }
-        apiMessages.append(["role": "user", "content": imageBlocks + [["type": "text", "text": content]]])
+        apiMessages.append([
+            "type": "message", "role": "user", "content": imageBlocks + [["type": "input_text", "text": content]],
+        ])
 
         do {
             for _ in 0..<Self.maxAgentIterations {
                 let message = try await streamAssistantMessage()
-                apiMessages.append(["role": "assistant", "content": message.blocks])
+                apiMessages += message.output
                 usage.record(message.usage)
-
-                switch message.stopReason {
-                case "tool_use":
-                    apiMessages.append(["role": "user", "content": await runTools(in: message)])
-                    isToolActive = false
-                case "pause_turn":
-                    continue
-                case "refusal":
-                    return appendNote("Claude declined to answer this request.")
-                case "max_tokens":
-                    return appendNote("Response hit the length limit.")
-                default:
+                guard !message.functionCalls.isEmpty else {
+                    let text = message.output.filter { $0["phase"] as? String != "commentary" }
+                        .map { OpenAIResponse.text(in: $0) }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+                    if let entry = entries.last(where: {
+                        if case .text(let text) = $0 { return text.role == .assistant }
+                        return false
+                    }), !text.isEmpty {
+                        onReply?(text, entry.id)
+                    }
                     return
                 }
+                apiMessages += await runTools(in: message)
+                try Task.checkCancellation()
+                isToolActive = false
             }
             appendNote("Stopped after \(Self.maxAgentIterations) steps.")
         } catch is CancellationError {
             keepInterruptedTurn(
-                since: checkpoint, userContent: imageBlocks + [["type": "text", "text": content]],
+                since: checkpoint, userContent: imageBlocks + [["type": "input_text", "text": content]],
                 firstReplyIndex: firstReplyIndex)
         } catch  where Task.isCancelled {
             keepInterruptedTurn(
-                since: checkpoint, userContent: imageBlocks + [["type": "text", "text": content]],
+                since: checkpoint, userContent: imageBlocks + [["type": "input_text", "text": content]],
                 firstReplyIndex: firstReplyIndex)
         } catch {
-            // Roll back to before this turn so the transcript never holds a tool_use without its result.
+            if let incomplete = error as? OpenAIIncompleteResponse { usage.record(incomplete.usage) }
+            // Roll back to before this turn so the transcript never holds a function call without its result.
             apiMessages.removeSubrange(checkpoint...)
             appendNote("**Error:** \(error.localizedDescription)")
         }
@@ -289,120 +305,110 @@ final class ChatModel: ObservableObject {
             .compactMap { if case .text(let entry) = $0, entry.role == .assistant { entry.text } else { nil } }
             .joined(separator: "\n\n")
         apiMessages.removeSubrange(checkpoint...)
-        apiMessages.append(["role": "user", "content": userContent])
+        apiMessages.append(["type": "message", "role": "user", "content": userContent])
         apiMessages.append([
-            "role": "assistant",
-            "content": [
-                [
-                    "type": "text",
-                    "text": partialReply.isEmpty
-                        ? "(Interrupted by the user before answering.)"
-                        : partialReply + "\n\n(Interrupted by the user.)",
-                ]
-            ],
+            "type": "message", "role": "assistant",
+            "content": partialReply.isEmpty
+                ? "(Interrupted by the user before answering.)"
+                : partialReply + "\n\n(Interrupted by the user.)",
         ])
         appendNote("Stopped.")
     }
 
-    private func streamAssistantMessage() async throws -> AssistantMessage {
+    private func streamAssistantMessage() async throws -> OpenAIResponse {
         defer { isStreamingText = false }
-
-        var message = AssistantMessage()
+        var response: OpenAIResponse?
         var textEntries: [Int: TextEntry] = [:]
-        var toolEntries: [Int: ToolCallEntry] = [:]
-        defer { textEntries.values.forEach { $0.flush() } }
+        var serverCalls: [Int: ToolCallEntry] = [:]
+        defer {
+            textEntries.values.forEach { $0.flush() }
+            if response == nil || Task.isCancelled {
+                for entry in Array(toolCalls.values) + Array(serverCalls.values) where !entry.isFinished {
+                    entry.status = Task.isCancelled ? .cancelled : .failed
+                }
+            }
+        }
 
-        Self.repairDanglingToolUses(&apiMessages)
-        var serverCalls: [String: ToolCallEntry] = [:]
-        for try await event in ClaudeClient.stream(
-            system: Self.systemPrompt, messages: apiMessages, tools: tools.definitions + Self.serverTools)
+        Self.repairDanglingToolCalls(&apiMessages)
+        for try await event in OpenAIClient.stream(
+            instructions: Self.systemPrompt, input: apiMessages, tools: tools.definitions + [["type": "web_search"]])
         {
-            message.apply(event)
             switch event {
-            case .blockStart(let index, let block):
-                switch block["type"] as? String {
-                case "text":
+            case .text(let index, let delta):
+                if textEntries[index] == nil {
                     let entry = TextEntry(role: .assistant, scroll: scroll)
                     textEntries[index] = entry
                     entries.append(.text(entry))
-                    isStreamingText = true
-                case "tool_use":
+                }
+                textEntries[index]?.enqueue(delta)
+                isStreamingText = true
+            case .itemAdded(let index, let item):
+                switch item["type"] as? String {
+                case "function_call":
                     isToolActive = true
                     let entry = ToolCallEntry(
-                        toolUseID: block["id"] as? String ?? "", name: block["name"] as? String ?? "tool")
-                    toolEntries[index] = entry
+                        toolUseID: item["call_id"] as? String ?? "", name: item["name"] as? String ?? "tool")
                     toolCalls[entry.toolUseID] = entry
-                    if (try? tools.tool(named: entry.name))?.isHidden != true {
-                        entries.append(.tool(entry))
-                    }
-                // Dynamic filtering also emits internal code_execution calls; only search and fetch get a row.
-                case "server_tool_use" where ["web_search", "web_fetch"].contains(block["name"] as? String ?? ""):
-                    // Web search and fetch run on Anthropic's side; the row only mirrors their progress.
-                    let entry = ToolCallEntry(
-                        toolUseID: block["id"] as? String ?? "", name: block["name"] as? String ?? "web")
-                    toolEntries[index] = entry
-                    serverCalls[entry.toolUseID] = entry
+                    if (try? tools.tool(named: entry.name))?.isHidden != true { entries.append(.tool(entry)) }
+                case "web_search_call":
+                    let entry = ToolCallEntry(toolUseID: item["id"] as? String ?? "", name: "web_search")
+                    entry.status = .running
+                    serverCalls[index] = entry
                     entries.append(.tool(entry))
-                case "web_search_tool_result", "web_fetch_tool_result":
-                    if let entry = serverCalls[block["tool_use_id"] as? String ?? ""] {
-                        Self.finishServerCall(entry, result: block)
-                        scroll.tick += 1
+                default: break
+                }
+            case .itemDone(let index, let item):
+                if let entry = serverCalls[index] {
+                    entry.input = item["action"] as? JSON ?? [:]
+                    entry.output = entry.inputSummary
+                    entry.status = item["status"] as? String == "failed" ? .failed : .succeeded
+                }
+                if item["type"] as? String == "message" {
+                    let text = OpenAIResponse.text(in: item)
+                    if let entry = textEntries[index] {
+                        entry.replace(with: text)
+                    } else if !text.isEmpty {
+                        let entry = TextEntry(role: .assistant, text: text, scroll: scroll)
+                        textEntries[index] = entry
+                        entries.append(.text(entry))
                     }
-                default:
-                    break
                 }
-            case .blockDelta(let index, let delta):
-                if delta["type"] as? String == "text_delta", let text = delta["text"] as? String {
-                    textEntries[index]?.enqueue(text)
-                }
-            case .blockStop(let index):
-                if let entry = toolEntries[index] {
-                    entry.input = message.blocks[index]["input"] as? JSON ?? [:]
-                    if serverCalls[entry.toolUseID] != nil, !entry.isFinished { entry.status = .running }
-                }
-            case .stopReason, .usage:
-                break
+            case .completed(let completed):
+                response = completed
             }
         }
-
-        if let reply = textEntries.sorted(by: { $0.key < $1.key }).map({ $0.value }).last {
-            reply.flush()
-            ChatHistory.append(role: "assistant", text: reply.text, app: tracker.app?.localizedName, chat: id)
-        }
-        // A cancelled stream can end without throwing. Treat it as cancelled, never as a finished reply: a
-        // half-streamed tool_use saved as a normal turn breaks every later request with a 400.
         try Task.checkCancellation()
-        guard !message.blocks.isEmpty else { throw ClaudeError.stream("Empty response") }
-        message.dropEmptyTextBlocks()
-        return message
+        guard let response else { throw ToolError.failed("OpenAI stream ended before completion.") }
+        for entry in textEntries.sorted(by: { $0.key < $1.key }).map({ $0.value }) {
+            entry.flush()
+            ChatHistory.append(role: "assistant", text: entry.text, app: tracker.app?.localizedName, chat: id)
+        }
+        return response
     }
 
-    private func runTools(in message: AssistantMessage) async -> [JSON] {
+    private func runTools(in message: OpenAIResponse) async -> [JSON] {
         var results: [JSON] = []
-        for block in message.blocks where block["type"] as? String == "tool_use" {
-            let id = block["id"] as? String ?? ""
+        for call in message.functionCalls {
+            let id = call["call_id"] as? String ?? ""
             let entry =
                 toolCalls.removeValue(forKey: id)
-                ?? ToolCallEntry(toolUseID: id, name: block["name"] as? String ?? "tool")
-            let (output, isError) = await execute(
-                block, entry: entry, inputIsValid: !message.invalidToolInputs.contains(id))
-            var content: [JSON] = [["type": "text", "text": output.text]]
-            if let jpeg = output.jpeg {
-                content.append([
-                    "type": "image",
-                    "source": ["type": "base64", "media_type": "image/jpeg", "data": jpeg.base64EncodedString()],
-                ])
-            }
-            results.append(["type": "tool_result", "tool_use_id": id, "content": content, "is_error": isError])
+                ?? ToolCallEntry(toolUseID: id, name: call["name"] as? String ?? "tool")
+            let arguments = Data((call["arguments"] as? String ?? "").utf8)
+            let input = (try? JSONSerialization.jsonObject(with: arguments)) as? JSON
+            let (output, isError) = await execute(input, entry: entry)
+            var content: [JSON] = [["type": "input_text", "text": isError ? "Error: " + output.text : output.text]]
+            if let jpeg = output.jpeg { content.append(OpenAIClient.image(jpeg)) }
+            results.append(["type": "function_call_output", "call_id": id, "output": content])
         }
         return results
     }
 
-    private func execute(_ block: JSON, entry: ToolCallEntry, inputIsValid: Bool) async -> (ToolOutput, Bool) {
+    private func execute(_ input: JSON?, entry: ToolCallEntry) async -> (ToolOutput, Bool) {
         do {
-            guard inputIsValid else { throw ToolError.invalidInput("arguments were not valid JSON") }
+            guard let input else { throw ToolError.invalidInput("arguments were not valid JSON") }
+            try Task.checkCancellation()
+            entry.input = input
             let tool = try tools.tool(named: entry.name)
-            let input = block["input"] as? JSON ?? [:]
             try tools.validate(input, for: tool)
             callsThisTurn[tool.name, default: 0] += 1
             if let limit = tool.maxCallsPerTurn, callsThisTurn[tool.name, default: 0] > limit {
@@ -414,7 +420,7 @@ final class ChatModel: ObservableObject {
                 return (ToolOutput(text: "The user declined this action."), true)
             }
             entry.status = .running
-            // Its own task so the row's Stop button can cancel just this tool and let Claude carry on.
+            // Its own task so the row's Stop button can cancel just this tool and let the assistant carry on.
             let work = Task {
                 try await tool.run(
                     input,
@@ -462,65 +468,29 @@ final class ChatModel: ObservableObject {
         }
     }
 
-    /// Anthropic-hosted tools: Claude searches and reads the web without any client code running.
-    /// Web fetch can only open URLs that already appear in the conversation (from search results or the user).
-    static let serverTools: [JSON] = [
-        ["type": "web_search_20260209", "name": "web_search", "max_uses": 5],
-        ["type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5, "max_content_tokens": 20000],
-    ]
-
-    /// Errors come back as a 200 with an error object as `content`; successful search content is a list.
-    private static func finishServerCall(_ entry: ToolCallEntry, result: JSON) {
-        if let error = result["content"] as? JSON, let code = error["error_code"] as? String {
-            entry.output = "Error: \(code)"
-            entry.status = .failed
-            Log.info("web", "\(entry.name) failed: \(code)")
-            return
-        }
-        if let results = result["content"] as? [JSON] {
-            entry.output = results.compactMap { item in
-                guard let url = item["url"] as? String else { return nil }
-                return "\(item["title"] as? String ?? url)\n  \(url)"
-            }.joined(separator: "\n")
-        } else if let fetched = result["content"] as? JSON {
-            let document = fetched["content"] as? JSON
-            entry.output = [(document?["title"] as? String), fetched["url"] as? String].compactMap { $0 }.joined(
-                separator: "\n")
-        }
-        entry.status = .succeeded
-        Log.info("web", "\(entry.name) ok: \(entry.inputSummary)")
-    }
-
-    /// Every tool_use must be answered by a tool_result in the next message. Fills in any that are missing
-    /// (from an interrupted turn or an older saved chat) so one bad turn can't wedge the whole conversation.
-    static func repairDanglingToolUses(_ messages: inout [JSON]) {
-        var index = 0
-        while index < messages.count {
-            defer { index += 1 }
-            guard messages[index]["role"] as? String == "assistant" else { continue }
-            let toolUseIDs = (messages[index]["content"] as? [JSON] ?? [])
-                .filter { $0["type"] as? String == "tool_use" }
-                .compactMap { $0["id"] as? String }
-            guard !toolUseIDs.isEmpty else { continue }
-
-            let next = index + 1 < messages.count ? messages[index + 1] : nil
-            var nextContent = next?["role"] as? String == "user" ? next?["content"] as? [JSON] ?? [] : []
-            let answered = Set(
-                nextContent.compactMap { $0["type"] as? String == "tool_result" ? $0["tool_use_id"] as? String : nil })
-            let missing = toolUseIDs.filter { !answered.contains($0) }
-            guard !missing.isEmpty else { continue }
-
-            let filler: [JSON] = missing.map {
-                ["type": "tool_result", "tool_use_id": $0, "content": "Cancelled before it ran.", "is_error": true]
+    /// Complete any interrupted function calls before the next user message so saved chats remain usable.
+    static func repairDanglingToolCalls(_ messages: inout [JSON]) {
+        var pending: [String] = []
+        var repaired: [JSON] = []
+        for message in messages {
+            if message["role"] as? String == "user" {
+                repaired += pending.map {
+                    ["type": "function_call_output", "call_id": $0, "output": "Cancelled before it ran."]
+                }
+                pending = []
             }
-            if next?["role"] as? String == "user" {
-                // tool_results must come first in the user message.
-                nextContent = filler + nextContent
-                messages[index + 1]["content"] = nextContent
-            } else {
-                messages.insert(["role": "user", "content": filler], at: index + 1)
+            if message["type"] as? String == "function_call", let id = message["call_id"] as? String {
+                pending.append(id)
             }
+            if message["type"] as? String == "function_call_output", let id = message["call_id"] as? String {
+                pending.removeAll { $0 == id }
+            }
+            repaired.append(message)
         }
+        repaired += pending.map {
+            ["type": "function_call_output", "call_id": $0, "output": "Cancelled before it ran."]
+        }
+        messages = repaired
     }
 
     // MARK: - Context
@@ -540,7 +510,7 @@ final class ChatModel: ObservableObject {
         entries.append(.text(TextEntry(role: .assistant, text: "_\(text)_")))
     }
 
-    /// Runs a bare `/command`. Returns false for ordinary messages, which are sent to Claude.
+    /// Runs a bare `/command`. Returns false for ordinary messages, which are sent to OpenAI.
     private func handleCommand(_ message: QueuedMessage) -> Bool {
         guard message.attachments.isEmpty, message.text.hasPrefix("/") else { return false }
         guard let command = SlashCommand.exact(message.text) else {
@@ -646,53 +616,5 @@ final class ChatModel: ObservableObject {
             call.status = saved.toolFailed == true ? .failed : .succeeded
             return .tool(call)
         }
-    }
-}
-
-/// Accumulates streamed content blocks verbatim, including thinking signatures, so they can be sent back unchanged.
-private struct AssistantMessage {
-    private(set) var blocks: [JSON] = []
-    private(set) var stopReason = "end_turn"
-    private(set) var usage = TokenUsage()
-    private(set) var invalidToolInputs: Set<String> = []
-    private var partialInputs: [Int: String] = [:]
-
-    mutating func apply(_ event: StreamEvent) {
-        switch event {
-        case .blockStart(let index, let block):
-            while blocks.count <= index { blocks.append([:]) }
-            blocks[index] = block
-        case .blockDelta(let index, let delta):
-            guard blocks.indices.contains(index) else { return }
-            switch delta["type"] as? String {
-            case "text_delta": append(delta["text"], to: "text", at: index)
-            case "thinking_delta": append(delta["thinking"], to: "thinking", at: index)
-            case "signature_delta": append(delta["signature"], to: "signature", at: index)
-            case "input_json_delta": partialInputs[index, default: ""] += delta["partial_json"] as? String ?? ""
-            default: break
-            }
-        case .blockStop(let index):
-            guard let raw = partialInputs.removeValue(forKey: index), blocks.indices.contains(index) else { return }
-            if raw.isEmpty { return }
-            if let input = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? JSON {
-                blocks[index]["input"] = input
-            } else {
-                blocks[index]["input"] = JSON()
-                invalidToolInputs.insert(blocks[index]["id"] as? String ?? "")
-            }
-        case .stopReason(let reason):
-            stopReason = reason
-        case .usage(let fields):
-            usage.merge(fields)
-        }
-    }
-
-    /// The API rejects empty text blocks when they are sent back in history.
-    mutating func dropEmptyTextBlocks() {
-        blocks.removeAll { $0["type"] as? String == "text" && ($0["text"] as? String ?? "").isEmpty }
-    }
-
-    private mutating func append(_ value: Any?, to key: String, at index: Int) {
-        blocks[index][key] = (blocks[index][key] as? String ?? "") + (value as? String ?? "")
     }
 }
